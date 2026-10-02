@@ -1,0 +1,77 @@
+name: Refresh CPI breadth dashboard
+
+on:
+  schedule:
+    # CPI is released 08:30 ET (12:30 UTC in EDT, 13:30 UTC in EST). 14:15 UTC weekdays
+    # catches release day in both seasons; other days just re-deploy the same data.
+    - cron: '15 14 * * 1-5'
+    # Monthly keepalive so GitHub doesn't disable the schedule after 60 days of repo inactivity
+    - cron: '0 3 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write     # keepalive commit only
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore font cache
+        uses: actions/cache@v4
+        with:
+          path: .cache/*.woff2
+          key: fonts-v1
+
+      - name: Build dashboard
+        env:
+          BLS_CONTACT_EMAIL: ${{ secrets.BLS_CONTACT_EMAIL }}
+          BLS_API_KEY: ${{ secrets.BLS_API_KEY }}
+        run: python build.py
+
+      - name: Verify output
+        run: |
+          test -f site/index.html
+          size=$(stat -c%s site/index.html)
+          echo "index.html: $size bytes"
+          test "$size" -gt 100000
+          grep -q '"dates":\["1988-01"' site/index.html
+          cp .nojekyll site/
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Keepalive commit (1st of month)
+        if: github.event.schedule == '0 3 1 * *'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "keepalive $(date -u +%Y-%m-%d)"
+          git push
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
